@@ -219,12 +219,13 @@ done
 # validate` does not accept a v3 source kit at all, so build the kit and assert
 # on what sbx resolved from it.
 if command -v sbx >/dev/null 2>&1; then
-  kit_json=$(sbx kit inspect "$script_dir" --json 2>/dev/null) || kit_json=""
+  kit_json=$(sbx kit inspect "$script_dir" --json 2>"$work/kit.err") || kit_json=""
 
   if [[ -z "$kit_json" ]]; then
     fail=$((fail + 1))
     echo "FAIL - could not build or inspect the kit; pi.yaml is unverified"
     echo "       building needs Docker and the sbx daemon (sbx daemon status)"
+    sed 's/^/       sbx: /' "$work/kit.err"
   else
     # shellcheck disable=SC2016  # single quotes are required: the ${...} below
     # are JS template literals resolved by node, not bash expansions.
