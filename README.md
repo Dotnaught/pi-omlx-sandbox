@@ -79,11 +79,11 @@ sbx kit inspect ~/Code/repos/pi-omlx-sandbox
 
 ### Updating Pi
 
-The image is based on `sbx/pi-image`, which is rebuilt nightly with the latest Pi
-release. On top of that, `pi-start.sh` runs `pi update --self` every time Pi
-launches, so a running sandbox picks up new releases without being recreated. If
-the update fails — for example, the npm registry is unreachable — it prints a
-warning and launches the version already installed.
+The image installs the latest Pi release when the kit is built, and `pi-start.sh`
+runs `pi update --self` every time Pi launches, so a running sandbox picks up new
+releases without being recreated. If the update fails — for example, the npm
+registry is unreachable — it prints a warning and launches the version already
+installed.
 
 ### Tests
 
@@ -278,7 +278,9 @@ The mount is on by default. `sbx run --skills=off` starts a sandbox without it.
 
 ## What's in the image
 
-- Base: [`sbx/pi-image`](https://hub.docker.com/r/sbx/pi-image) — the sandbox shell template with Node.js, `@earendil-works/pi-coding-agent` at the latest release, and `fd` (so Pi doesn't download it at runtime)
+- Base: `docker/sandbox-templates:shell`, which provides Node.js. The `shell-docker` variant is avoided because it runs a Docker engine for the life of the sandbox
+- `@earendil-works/pi-coding-agent` (global npm install as `agent`, updated at every launch)
+- `fd` (pre-installed so Pi doesn't download it at runtime)
 - `uv` + `ruff` (Python toolchain)
 - `pi-start.sh` — entrypoint that writes Pi's provider config, updates Pi, and launches the agent
 - `extensions/omlx/` — the oMLX provider extension, copied to `~/.pi/agent/extensions/`
