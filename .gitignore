@@ -1,9 +1,5 @@
 .DS_Store
 *.env
 *.bak
-*.tar
-*.ta
 *.claude
 .claude/settings.local.json
-/skills/*
-!/skills/.gitkeep

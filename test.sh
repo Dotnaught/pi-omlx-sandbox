@@ -1,7 +1,8 @@
 #!/bin/bash
-# Exercises pi-start.sh model selection and error paths against fixture
-# payloads with curl and pi stubbed out, then spec.yaml and the extension's
-# behaviour. Needs neither Docker nor a running oMLX.
+# Exercises pi-start.sh model selection, self-update and error paths against
+# fixture payloads with curl and pi stubbed out, then pi.yaml and the
+# extension's behaviour. Needs neither Docker nor a running oMLX, except to
+# build the kit for the pi.yaml checks.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,6 +13,10 @@ mkdir -p "$work/bin" "$work/home"
 
 cat >"$work/bin/pi" <<'EOF'
 #!/bin/bash
+if [[ "${1:-}" == "update" ]]; then
+  echo "PI_UPDATE: $*"
+  exit "${PI_UPDATE_STATUS:-0}"
+fi
 echo "PI_ARGS: $*"
 EOF
 
@@ -65,7 +70,7 @@ launch() { # fixture http_code [omlx_model] -- keeps whatever $HOME already hold
   local output status
   output=$(
     env PATH="$work/bin:$PATH" HOME="$work/home" FIXTURE="$work/$1" \
-      HTTP_CODE="$2" OMLX_MODEL="${3:-}" \
+      HTTP_CODE="$2" OMLX_MODEL="${3:-}" PI_UPDATE_STATUS="${PI_UPDATE_STATUS:-0}" \
       OMLX_CATALOG="$script_dir/extensions/omlx/catalog.mjs" \
       bash "$script_dir/pi-start.sh" 2>&1
   ) && status=0 || status=$?
@@ -126,8 +131,22 @@ for case in "no-chat.json 200" "bad-shape.json 200" "not-json.json 200" \
   expect "does not launch Pi on $case" "no-launch" "$(
     [[ "$result" != *PI_ARGS* ]] && echo "no-launch"
   )"
+  expect "does not update Pi on $case" "no-update" "$(
+    [[ "$result" != *PI_UPDATE* ]] && echo "no-update"
+  )"
 done
 expect "aborts on a rejected pin" "exit=1" "$(run loaded.json 200 nope-27B-fp16)"
+
+result=$(run loaded.json 200)
+expect "updates Pi on launch" "PI_UPDATE: update --self" "$result"
+expect "updates Pi before launching it" "update-first" "$(
+  [[ "$result" == *PI_UPDATE*PI_ARGS* ]] && echo "update-first"
+)"
+result=$(PI_UPDATE_STATUS=1 run loaded.json 200)
+expect "warns when the update fails" "could not update Pi" "$result"
+expect "launches the installed Pi when the update fails" \
+  "PI_ARGS: --model omlx/Qwen3.6-35B" "$result"
+expect "exits cleanly when the update fails" "exit=0" "$result"
 
 run loaded.json 200 >/dev/null
 config=$(cat "$work/home/.pi/agent/models.json")
@@ -196,75 +215,16 @@ for bad in 'not json' '"a string"' '[1,2]' 'null'; do
     '"defaultProvider": "omlx"' "$(cat "$work/home/.pi/agent/settings.json")"
 done
 
-# The Dockerfile copies skills/ into the image verbatim, so malformed
-# frontmatter only surfaces as a skill conflict at container start. These are
-# the two defects that have actually broken a build: frontmatter that does not
-# open on line 1, and an unquoted description containing a colon-space, which
-# YAML reads as a nested mapping key rather than part of the value.
-#
-# skills/ is gitignored, so a fresh clone has none and an unguarded glob would
-# expand to its own literal pattern.
-shopt -s nullglob
-skill_files=("$script_dir"/skills/*/SKILL.md)
-shopt -u nullglob
-if [[ ${#skill_files[@]} -eq 0 ]]; then
-  echo "skip - no skills checked in; frontmatter checks skipped"
-else
-  for skill in "${skill_files[@]}"; do
-    name=$(basename "$(dirname "$skill")")
-    front=$(sed -n '1,40p' "$skill")
-
-    expect "skill $name: frontmatter opens on line 1" "ok" "$(
-      [[ "$(printf '%s\n' "$front" | head -1)" == "---" ]] && echo "ok"
-    )"
-    # Bodies use --- as a horizontal rule, so "a second --- exists" would pass
-    # even with the fence deleted. Assert the block between the fences is
-    # nothing but key: value lines, which prose bullets fail.
-    fence=$(printf '%s\n' "$front" | rg -n '^---$' | sed -n '2p' | cut -d: -f1 || true)
-    block=""
-    block_ok=""
-    if [[ -n "$fence" ]]; then
-      block=$(printf '%s\n' "$front" | sed -n "2,$((fence - 1))p")
-      block_ok="ok"
-      while IFS= read -r line; do
-        if [[ -n "$line" ]] && ! [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_-]*: ]]; then
-          block_ok=""
-        fi
-      done < <(printf '%s\n' "$block")
-    fi
-    expect "skill $name: frontmatter holds only key: value lines" "ok" "$block_ok"
-
-    # Scoped to the block, not the file: a body line starting with
-    # "description:" must not stand in for a missing frontmatter key.
-    value=$(printf '%s\n' "$block" | rg -N -m1 '^description:' || true)
-    value=${value#description:}
-    value=${value# }
-    expect "skill $name: declares a description" "ok" "$(
-      [[ -n "$value" ]] && echo "ok"
-    )"
-    # A plain YAML scalar cannot contain a colon-space: the parser reads it as
-    # a nested mapping key and the description is lost. Quoting is the fix.
-    first=${value:0:1}
-    yaml_ok="ok"
-    if [[ "$first" != '"' && "$first" != "'" && "$value" == *": "* ]]; then
-      yaml_ok=""
-    fi
-    expect "skill $name: description survives YAML parsing" "ok" "$yaml_ok"
-  done
-fi
-
-# `sbx kit validate` only checks the YAML shape. An empty credential identifier
-# passes it and then panics during credential resolution at `sbx run`, so assert
-# on the parsed artifact instead of trusting the validator.
+# A well-formed descriptor can still resolve to the wrong policy, and `sbx kit
+# validate` does not accept a v3 source kit at all, so build the kit and assert
+# on what sbx resolved from it.
 if command -v sbx >/dev/null 2>&1; then
-  kit_json=$(
-    sbx kit pack "$script_dir" -o "$work/kit.tar" >/dev/null 2>&1 &&
-      sbx kit inspect "$work/kit.tar" --json 2>/dev/null
-  ) || kit_json=""
+  kit_json=$(sbx kit inspect "$script_dir" --json 2>/dev/null) || kit_json=""
 
   if [[ -z "$kit_json" ]]; then
     fail=$((fail + 1))
-    echo "FAIL - could not pack or inspect the kit; spec.yaml is unverified"
+    echo "FAIL - could not build or inspect the kit; pi.yaml is unverified"
+    echo "       building needs Docker and the sbx daemon (sbx daemon status)"
   else
     # shellcheck disable=SC2016  # single quotes are required: the ${...} below
     # are JS template literals resolved by node, not bash expansions.
@@ -275,36 +235,35 @@ process.stdin.on("end", () => {
   const kit = JSON.parse(raw);
   const creds = kit.credentials ?? [];
   const injects = creds.flatMap((c) => c.apiKey?.inject ?? []);
-  const allow = kit.caps?.network?.allow ?? [];
+  const allow = kit.permissions?.network?.allow ?? [];
+  const allowedHosts = new Set(allow.map((a) => a.replace(/:\d+$/, "")));
   const out = {
-    "schema": kit.manifest?.schemaVersion ?? "missing",
+    "schema": kit.schemaVersion ?? "missing",
     "empty-service": creds.filter((c) => !c.service).length,
     "inject-rules": injects.length,
     "incomplete-inject": injects.filter((i) => !i.domain || !i.header).length,
+    "inject-outside-allow": injects.filter((i) => !allowedHosts.has(i.domain)).length,
     "network-allow-empty": allow.length === 0 ? "yes" : "no",
     "omlx-host-allowed": allow.some((d) => d.startsWith("host.docker.internal:")) ? "yes" : "no",
-    "omlx-port-set": kit.environment?.variables?.OMLX_PORT ? "yes" : "no",
-    "entrypoint": kit.manifest?.binary ?? "missing",
+    "npm-allowed": allowedHosts.has("registry.npmjs.org") ? "yes" : "no",
+    "entrypoint": (kit.sandbox?.entrypoint ?? ["missing"]).join(" "),
   };
   for (const [k, v] of Object.entries(out)) console.log(`${k}=${v}`);
 });
 ')
-    expect "spec.yaml is kit-spec v2" "schema=2" "$spec"
+    expect "pi.yaml is kit-spec v3" "schema=3" "$spec"
     expect "every credential has a service identifier" "empty-service=0" "$spec"
     expect "credential injection is configured" "inject-rules=1" "$spec"
     expect "every inject rule has a domain and header" "incomplete-inject=0" "$spec"
+    expect "every inject domain is on the allow list" "inject-outside-allow=0" "$spec"
     expect "the network allow list survives the schema" "network-allow-empty=no" "$spec"
     expect "oMLX on the host stays reachable" "omlx-host-allowed=yes" "$spec"
-    expect "OMLX_PORT reaches the sandbox" "omlx-port-set=yes" "$spec"
-    expect "the entrypoint matches the path the Dockerfile installs" \
+    expect "the npm registry is reachable for pi update" "npm-allowed=yes" "$spec"
+    expect "the entrypoint matches the path pi.dockerfile installs" \
       "entrypoint=/usr/local/bin/pi-start.sh" "$spec"
   fi
-
-  expect "spec.yaml uses no deprecated fields" "current" "$(
-    sbx kit validate "$script_dir" 2>&1 | rg -q "deprecated field" || echo "current"
-  )"
 else
-  echo "skip - sbx not installed; spec.yaml checks skipped"
+  echo "skip - sbx not installed; pi.yaml checks skipped"
 fi
 
 echo

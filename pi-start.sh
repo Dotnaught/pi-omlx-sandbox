@@ -132,4 +132,11 @@ export OMLX_BASE_URL="${base_url}/v1"
 # exec replaces this shell, so the EXIT trap never runs.
 rm -f "$response"
 
+# Pi tracks upstream by updating itself at launch rather than by image rebuilds.
+# A failed update (registry unreachable, npm error) must not cost the session,
+# so it falls back to the version already installed.
+if ! pi update --self; then
+  echo "warning: could not update Pi; launching the installed version" >&2
+fi
+
 exec pi --model "omlx/${model}" "$@"

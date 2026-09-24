@@ -1,0 +1,61 @@
+# syntax=docker/sandbox-kit:3
+schemaVersion: "3"
+kind: workload
+displayName: Pi
+description: Terminal AI coding agent backed by a local oMLX model server
+sourceUrl: https://github.com/Dotnaught/pi-omlx-sandbox
+
+capabilities:
+  - type: com.docker.sandbox/sbx@1
+
+  # oMLX serves its OpenAI-compatible API on the host at port 8000 (default).
+  # Inside the sandbox, the host is reachable via host.docker.internal.
+  # registry.npmjs.org also serves the `pi update --self` pi-start.sh runs on
+  # every launch.
+  #
+  # api.github.com is listed beside the *.github.com wildcard because the
+  # credential inject check below is an exact host match: the wildcard covers
+  # the host at run time but does not satisfy validation.
+  - type: com.docker.sandbox/network-policy@1
+    config:
+      runtime:
+        allow:
+          - "host.docker.internal:8000"
+          - "github.com:443"
+          - "api.github.com:443"
+          - "*.github.com:443"
+          - "*.githubusercontent.com:443"
+          - "registry.npmjs.org:443"
+          - "*.npmjs.com:443"
+          - "pypi.org:443"
+          - "files.pythonhosted.org:443"
+
+  # The proxy injects this from sbx's stored secret keychain, so the token never
+  # enters the sandbox. It is not read from the host environment — store it with
+  # `sbx secret set github` (or `sbx secret import`) or the header is not
+  # injected and GitHub API calls go out unauthenticated. Optional, so an
+  # unbound secret does not stop the sandbox from starting.
+  #
+  # oMLX needs no credential: enable "skip API key verification" in the oMLX
+  # admin panel (global settings). The sbx proxy routes container traffic
+  # through its own localhost, so oMLX sees the connection as 127.0.0.1 and
+  # honours the setting. Open network policy is required so the proxy can
+  # reach the host:
+  #   sbx policy set-default open
+  - type: com.docker.sandbox/credential@1
+    optional: true
+    description: GitHub API access
+    config:
+      service: github
+      phase: runtime
+      apiKey:
+        proxyManaged: true
+        inject:
+          - {domain: api.github.com, header: Authorization, format: "Bearer %s"}
+
+  # Mounts the host's shared skills store (managed with `sbx skills`) where Pi
+  # discovers global skills. Optional, so `sbx run --skills=off` still starts.
+  - type: com.docker.sandbox/agent-skills@1
+    optional: true
+    config:
+      path: /home/agent/.pi/agent/skills
