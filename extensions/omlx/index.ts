@@ -2,9 +2,23 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { fetchChatModels, toProviderModels } from "./catalog.mjs";
 
-const BASE_URL =
-  process.env.OMLX_BASE_URL ??
-  `http://host.docker.internal:${process.env.OMLX_PORT ?? "8010"}/v1`;
+function resolveBaseUrl(): string {
+  const explicit = process.env.OMLX_BASE_URL;
+  if (explicit) {
+    return explicit;
+  }
+  const port = process.env.OMLX_PORT;
+  if (!port) {
+    throw new Error(
+      "omlx extension: neither OMLX_BASE_URL nor OMLX_PORT is set. pi-start.sh exports " +
+        "OMLX_BASE_URL and pi.dockerfile sets OMLX_PORT; restore ENV OMLX_PORT and recreate " +
+        "the sandbox.",
+    );
+  }
+  return `http://host.docker.internal:${port}/v1`;
+}
+
+const BASE_URL = resolveBaseUrl();
 
 // Pi treats whatever refreshModels returns as the replacement catalog, so there
 // is no typed way to say "leave it alone" — undefined is the signal, and the

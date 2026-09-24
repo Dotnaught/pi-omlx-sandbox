@@ -278,10 +278,10 @@ The mount is on by default. `sbx run --skills=off` starts a sandbox without it.
 
 ## What's in the image
 
-- Base: `docker/sandbox-templates:shell`, which provides Node.js. The `shell-docker` variant is avoided because it runs a Docker engine for the life of the sandbox
+- Base: `docker/sandbox-templates:shell`, pinned by digest (`BASE_DIGEST` in `pi.dockerfile`), which provides Node.js. The `shell-docker` variant is avoided because it runs a Docker engine for the life of the sandbox
 - `@earendil-works/pi-coding-agent` (global npm install as `agent`, updated at every launch)
 - `fd` (pre-installed so Pi doesn't download it at runtime)
-- `uv` + `ruff` (Python toolchain)
+- `uv` (pinned by `UV_VERSION` in `pi.dockerfile`) + `ruff` (Python toolchain)
 - `pi-start.sh` — entrypoint that writes Pi's provider config, updates Pi, and launches the agent
 - `extensions/omlx/` — the oMLX provider extension, copied to `~/.pi/agent/extensions/`
 - `CLAUDE.md` — global instructions copied to `~/.pi/agent/CLAUDE.md`

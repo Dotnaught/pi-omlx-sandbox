@@ -63,6 +63,17 @@ test("honours OMLX_PORT when no explicit base URL is set", async () => {
   }
 });
 
+test("refuses to load when neither OMLX_BASE_URL nor OMLX_PORT is set", async () => {
+  const saved = process.env.OMLX_BASE_URL;
+  delete process.env.OMLX_BASE_URL;
+  delete process.env.OMLX_PORT;
+  try {
+    await assert.rejects(register("?unset"), /neither OMLX_BASE_URL nor OMLX_PORT is set/);
+  } finally {
+    process.env.OMLX_BASE_URL = saved;
+  }
+});
+
 test("returns the live catalog, filtered to chat models", async () => {
   const restore = stubFetch(ok(PAYLOAD));
   try {

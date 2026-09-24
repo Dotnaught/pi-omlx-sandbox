@@ -70,7 +70,7 @@ launch() { # fixture http_code [omlx_model] -- keeps whatever $HOME already hold
   local output status
   output=$(
     env PATH="$work/bin:$PATH" HOME="$work/home" FIXTURE="$work/$1" \
-      HTTP_CODE="$2" OMLX_MODEL="${3:-}" PI_UPDATE_STATUS="${PI_UPDATE_STATUS:-0}" \
+      HTTP_CODE="$2" OMLX_MODEL="${3:-}" PI_UPDATE_STATUS="${PI_UPDATE_STATUS:-0}" OMLX_PORT=8010 \
       OMLX_CATALOG="$script_dir/extensions/omlx/catalog.mjs" \
       bash "$script_dir/pi-start.sh" 2>&1
   ) && status=0 || status=$?
@@ -136,6 +136,16 @@ for case in "no-chat.json 200" "bad-shape.json 200" "not-json.json 200" \
   )"
 done
 expect "aborts on a rejected pin" "exit=1" "$(run loaded.json 200 nope-27B-fp16)"
+
+result=$(
+  env -u OMLX_PORT PATH="$work/bin:$PATH" HOME="$work/home" FIXTURE="$work/loaded.json" \
+    OMLX_CATALOG="$script_dir/extensions/omlx/catalog.mjs" bash "$script_dir/pi-start.sh" 2>&1
+) && status=0 || status=$?
+expect "refuses to start without OMLX_PORT" "OMLX_PORT is not set" "$result"
+expect "exits non-zero without OMLX_PORT" "exit=1" "exit=$status"
+expect "does not launch Pi without OMLX_PORT" "no-launch" "$(
+  [[ "$result" != *PI_ARGS* && "$result" != *PI_UPDATE* ]] && echo "no-launch"
+)"
 
 result=$(run loaded.json 200)
 expect "updates Pi on launch" "PI_UPDATE: update --self" "$result"
@@ -215,18 +225,31 @@ for bad in 'not json' '"a string"' '[1,2]' 'null'; do
     '"defaultProvider": "omlx"' "$(cat "$work/home/.pi/agent/settings.json")"
 done
 
+# `sbx kit inspect --json` drops the entry-level `optional` flag and the whole
+# agent-skills capability, so these are read from pi.yaml itself. Losing
+# `optional: true` makes the sandbox refuse to start without a github secret, or
+# under `sbx run --skills=off`, while every other check still passes.
+capabilities=$(awk '
+  /^  - type: / { type = $3 }
+  type && /^    optional: true$/ { print "optional:" type }
+  type && /^      path: / { print "path:" type "=" $2 }
+' "$script_dir/pi.yaml")
+expect "the github credential is optional" \
+  "optional:com.docker.sandbox/credential@1" "$capabilities"
+expect "the skills mount is optional" \
+  "optional:com.docker.sandbox/agent-skills@1" "$capabilities"
+expect "the skills store mounts where Pi reads global skills" \
+  "path:com.docker.sandbox/agent-skills@1=/home/agent/.pi/agent/skills" "$capabilities"
+
 # A well-formed descriptor can still resolve to the wrong policy, and `sbx kit
 # validate` does not accept a v3 source kit at all, so build the kit and assert
 # on what sbx resolved from it.
 if command -v sbx >/dev/null 2>&1; then
   kit_json=$(sbx kit inspect "$script_dir" --json 2>"$work/kit.err") || kit_json=""
-
-  if [[ -z "$kit_json" ]]; then
-    fail=$((fail + 1))
-    echo "FAIL - could not build or inspect the kit; pi.yaml is unverified"
-    echo "       building needs Docker and the sbx daemon (sbx daemon status)"
-    sed 's/^/       sbx: /' "$work/kit.err"
-  else
+  spec=""
+  if [[ -n "$kit_json" ]]; then
+    # A stray line on stdout (a warning, a progress message) makes the output
+    # unparseable, which is reported below rather than letting set -e abort.
     # shellcheck disable=SC2016  # single quotes are required: the ${...} below
     # are JS template literals resolved by node, not bash expansions.
     spec=$(printf '%s' "$kit_json" | node -e '
@@ -251,7 +274,19 @@ process.stdin.on("end", () => {
   };
   for (const [k, v] of Object.entries(out)) console.log(`${k}=${v}`);
 });
-')
+' 2>/dev/null) || spec=""
+  fi
+
+  if [[ -z "$kit_json" ]]; then
+    fail=$((fail + 1))
+    echo "FAIL - could not build or inspect the kit; pi.yaml is unverified"
+    echo "       building needs Docker and the sbx daemon (sbx daemon status)"
+    sed 's/^/       sbx: /' "$work/kit.err"
+  elif [[ -z "$spec" ]]; then
+    fail=$((fail + 1))
+    echo "FAIL - sbx kit inspect did not return JSON; pi.yaml is unverified"
+    printf '%s\n' "$kit_json" | head -5 | sed 's/^/       sbx: /'
+  else
     expect "pi.yaml is kit-spec v3" "schema=3" "$spec"
     expect "every credential has a service identifier" "empty-service=0" "$spec"
     expect "credential injection is configured" "inject-rules=1" "$spec"

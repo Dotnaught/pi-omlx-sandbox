@@ -1,7 +1,9 @@
 # The plain shell template, not the -docker variant sbx/pi-image builds on: that
 # one starts a Docker engine that runs for the sandbox's lifetime, and setting
 # com.docker.sandboxes.start-docker=false on top of it breaks sandbox startup.
-FROM docker/sandbox-templates:shell
+# Pinned by digest; bump it deliberately to take template updates.
+ARG BASE_DIGEST=sha256:c66aa9c0212bb710089cc356501f8bde8989e02a7071bf1c6be0893be1c30adf
+FROM docker/sandbox-templates:shell@${BASE_DIGEST}
 
 USER root
 RUN apt-get update && \
@@ -20,7 +22,8 @@ USER agent
 RUN node --version && \
     npm install -g @earendil-works/pi-coding-agent && \
     pi --version
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
+ARG UV_VERSION=0.12.18
+RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
     ~/.local/bin/uv tool install ruff
 
 ENV OMLX_PORT=8010
