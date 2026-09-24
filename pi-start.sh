@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-port="${OMLX_PORT:-8000}"
+port="${OMLX_PORT:-8010}"
 base_url="http://host.docker.internal:${port}"
 status_url="${base_url}/v1/models/status"
 config_dir="$HOME/.pi/agent"

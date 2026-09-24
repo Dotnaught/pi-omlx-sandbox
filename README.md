@@ -9,19 +9,22 @@ Pi runs inside an isolated container with filesystem isolation enforced by sbx. 
 **macOS (Apple Silicon) only.** oMLX is built on Apple's MLX framework and does not run on Linux or Windows.
 
 - Docker Desktop for Mac
-- [oMLX](https://github.com/jundot/omlx) installed and running on the host at port 8000
+- [oMLX](https://github.com/jundot/omlx) installed and running on the host at port 8010
 - [`sbx`](https://github.com/docker/sandbox) CLI installed
 - At least one LLM or VLM model available in oMLX
 
 ## One-time setup
 
-### 1. oMLX: skip API key verification
+### 1. oMLX: port and API key verification
 
-The sbx proxy routes container traffic through its own localhost, so oMLX sees all requests as coming from `127.0.0.1`. Enable the matching setting so no API key is required:
+The sbx proxy routes container traffic through its own localhost, so oMLX sees all requests as coming from `127.0.0.1`. Enable the matching setting so no API key is required, and move oMLX off its default port:
 
 1. Open the oMLX Admin Dashboard
 2. Go to **Global Settings**
 3. Set **Skip API key verification** to **On**
+4. Set the server port to **8010**
+
+Inside the sandbox, `host.docker.internal` can resolve to an IPv6 address, and oMLX listens on IPv4 only. On port 8000, anything else on the Mac that publishes 8000 over IPv6 — a Docker container with `ports: ["8000:8000"]`, for example — answers in oMLX's place, and startup fails with `oMLX returned HTTP 404`. To use a different port, change `OMLX_PORT` in `pi.dockerfile` and the `host.docker.internal` entry in `pi.yaml` together.
 
 ### 2. sbx: set network policy to Open
 
@@ -125,7 +128,7 @@ For Pi to discover extensions from the mount, add the absolute path explicitly t
 
 Pi reads this settings file from the mount at startup and loads extensions from the specified path. Skills come from the sbx skills store instead (see [Adding skills](#adding-skills)).
 
-Pi connects to oMLX on the host at `host.docker.internal:8000`.
+Pi connects to oMLX on the host at `host.docker.internal:8010`.
 
 ### Path casing must match exactly
 

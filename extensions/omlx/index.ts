@@ -4,7 +4,7 @@ import { fetchChatModels, toProviderModels } from "./catalog.mjs";
 
 const BASE_URL =
   process.env.OMLX_BASE_URL ??
-  `http://host.docker.internal:${process.env.OMLX_PORT ?? "8000"}/v1`;
+  `http://host.docker.internal:${process.env.OMLX_PORT ?? "8010"}/v1`;
 
 // Pi treats whatever refreshModels returns as the replacement catalog, so there
 // is no typed way to say "leave it alone" — undefined is the signal, and the

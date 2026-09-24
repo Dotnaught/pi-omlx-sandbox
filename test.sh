@@ -245,7 +245,7 @@ process.stdin.on("end", () => {
     "incomplete-inject": injects.filter((i) => !i.domain || !i.header).length,
     "inject-outside-allow": injects.filter((i) => !allowedHosts.has(i.domain)).length,
     "network-allow-empty": allow.length === 0 ? "yes" : "no",
-    "omlx-host-allowed": allow.some((d) => d.startsWith("host.docker.internal:")) ? "yes" : "no",
+    "omlx-port": allow.find((d) => d.startsWith("host.docker.internal:"))?.split(":")[1] ?? "none",
     "npm-allowed": allowedHosts.has("registry.npmjs.org") ? "yes" : "no",
     "entrypoint": (kit.sandbox?.entrypoint ?? ["missing"]).join(" "),
   };
@@ -258,7 +258,12 @@ process.stdin.on("end", () => {
     expect "every inject rule has a domain and header" "incomplete-inject=0" "$spec"
     expect "every inject domain is on the allow list" "inject-outside-allow=0" "$spec"
     expect "the network allow list survives the schema" "network-allow-empty=no" "$spec"
-    expect "oMLX on the host stays reachable" "omlx-host-allowed=yes" "$spec"
+    # The allow entry and the ENV that pi-start.sh reads are two copies of one
+    # port; if they drift apart, the sandbox dials a port the policy never opened.
+    dockerfile_port=$(sed -n 's/^ENV OMLX_PORT=//p' "$script_dir/pi.dockerfile")
+    expect "OMLX_PORT is set in pi.dockerfile" "set" "$([[ -n "$dockerfile_port" ]] && echo set)"
+    expect "the allow list opens the port OMLX_PORT names" \
+      "omlx-port=${dockerfile_port:-unset}" "$spec"
     expect "the npm registry is reachable for pi update" "npm-allowed=yes" "$spec"
     expect "the entrypoint matches the path pi.dockerfile installs" \
       "entrypoint=/usr/local/bin/pi-start.sh" "$spec"

@@ -8,8 +8,10 @@ sourceUrl: https://github.com/Dotnaught/pi-omlx-sandbox
 capabilities:
   - type: com.docker.sandbox/sbx@1
 
-  # oMLX serves its OpenAI-compatible API on the host at port 8000 (default).
-  # Inside the sandbox, the host is reachable via host.docker.internal.
+  # oMLX serves its OpenAI-compatible API on the host at port 8010. Inside the
+  # sandbox, the host is reachable via host.docker.internal, which can resolve
+  # to IPv6; oMLX listens on IPv4 only, so on its default 8000 any other host
+  # service publishing 8000 over IPv6 (a Docker container, say) answers instead.
   # registry.npmjs.org also serves the `pi update --self` pi-start.sh runs on
   # every launch.
   #
@@ -20,7 +22,7 @@ capabilities:
     config:
       runtime:
         allow:
-          - "host.docker.internal:8000"
+          - "host.docker.internal:8010"
           - "github.com:443"
           - "api.github.com:443"
           - "*.github.com:443"

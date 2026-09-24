@@ -13,7 +13,7 @@ USER agent
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
     ~/.local/bin/uv tool install ruff
 
-ENV OMLX_PORT=8000
+ENV OMLX_PORT=8010
 ENTRYPOINT ["/usr/local/bin/pi-start.sh"]
 # The base image's CMD ["pi"] would otherwise reach pi-start.sh as an argument
 # and be passed on to Pi as a prompt.
