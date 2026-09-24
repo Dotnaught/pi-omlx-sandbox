@@ -10,7 +10,7 @@ Pi runs inside an isolated container with filesystem isolation enforced by sbx. 
 
 - Docker Desktop for Mac
 - [oMLX](https://github.com/jundot/omlx) installed and running on the host at port 8010
-- [`sbx`](https://github.com/docker/sandbox) CLI installed
+- [`sbx`](https://github.com/docker/sandbox) CLI v0.45 or later (`brew install docker/tap/sbx`); earlier releases cannot read a Kits v3 descriptor
 - At least one LLM or VLM model available in oMLX
 
 ## One-time setup
@@ -26,7 +26,19 @@ The sbx proxy routes container traffic through its own localhost, so oMLX sees a
 
 Inside the sandbox, `host.docker.internal` can resolve to an IPv6 address, and oMLX listens on IPv4 only. On port 8000, anything else on the Mac that publishes 8000 over IPv6 — a Docker container with `ports: ["8000:8000"]`, for example — answers in oMLX's place, and startup fails with `oMLX returned HTTP 404`. To use a different port, change `OMLX_PORT` in `pi.dockerfile` and the `host.docker.internal` entry in `pi.yaml` together.
 
-### 2. sbx: set network policy to Open
+### 2. sbx: sign in and start the daemon
+
+```sh
+sbx login
+sbx daemon start -d
+```
+
+`-d` detaches the daemon. Without it, the daemon runs in the foreground and stops
+when that terminal closes, and the next build fails with `load built kit image into
+the sandbox runtime: ... sandboxd.sock: connect: no such file or directory`.
+`sbx daemon status` shows whether it is running.
+
+### 3. sbx: set network policy to Open
 
 The proxy must be able to reach oMLX on the host:
 
@@ -34,7 +46,7 @@ The proxy must be able to reach oMLX on the host:
 sbx policy set-default open
 ```
 
-### 3. GitHub token
+### 4. GitHub token
 
 Store the token in sbx's secret keychain. The proxy injects it into requests to
 `api.github.com`, so it never enters the sandbox:
@@ -81,7 +93,7 @@ warning and launches the version already installed.
 
 Covers `pi-start.sh` model selection, self-update and error paths against fixture payloads with `curl` and `pi` stubbed out, then `pi.yaml`, then the extension's refresh behaviour. Needs neither Docker nor a running oMLX for the first and last parts.
 
-The `pi.yaml` checks build the kit and assert on `sbx kit inspect --json`, because a descriptor can be well-formed and still resolve to the wrong policy. They are skipped when `sbx` is not on `PATH`, and building the kit needs Docker running.
+The `pi.yaml` checks build the kit and assert on `sbx kit inspect --json`, because a descriptor can be well-formed and still resolve to the wrong policy. They are skipped when `sbx` is not on `PATH`, and building the kit needs Docker Desktop and the sbx daemon running.
 
 ## Run
 
@@ -98,6 +110,15 @@ For example, to run Pi against `~/Code/repos/myapp`:
 
 ```sh
 sbx run ~/Code/repos/pi-omlx-sandbox --name pi-omlx-sandbox ~/Code/repos/myapp
+```
+
+The first run builds the kit; later runs reuse the cached
+build until a file in this repo changes. If a sandbox named `pi-omlx-sandbox` already
+exists — for example after changing the kit — remove it first, which also deletes its
+session history:
+
+```sh
+sbx rm pi-omlx-sandbox
 ```
 
 Mount additional directories by appending more paths. Add `:ro` to mount read-only:
@@ -232,7 +253,7 @@ If tighter network control is needed, you would need to switch to a Balanced or 
 
 For project-specific instructions, add a `CLAUDE.md` or `AGENTS.md` to the project repo. Pi walks up the directory tree from the working directory and loads all matches, so project files layer on top of the global one automatically — no sandbox changes needed.
 
-After editing `CLAUDE.md`, recreate the sandbox; `sbx run` rebuilds the kit because its source changed.
+After editing `CLAUDE.md`, remove the sandbox with `sbx rm pi-omlx-sandbox` and create it again with the `sbx run` command from [Run](#run), which rebuilds the kit because its source changed.
 
 ## Adding skills
 
