@@ -60,6 +60,8 @@ fixture legacy.json '{"models":[{"id":"legacy-model","loaded":true}]}'
 fixture bad-shape.json '{"data":[{"id":"x"}]}'
 fixture not-json.json '<html><body>502 Bad Gateway</body></html>'
 fixture server-error.json '{"detail":"engine pool is not initialized"}'
+fixture empty.json ''
+fixture long-error.json "$(printf 'x%.0s' {1..300})PAST-THE-CAP"
 fixture zero-ctx.json '{"models":[{"id":"m","model_type":"llm","loaded":true,"max_context_window":0}]}'
 
 pass=0
@@ -126,8 +128,13 @@ expect "echoes the body of other HTTP failures" \
   "body: {\"detail\":\"engine pool is not initialized\"}" "$(run server-error.json 500)"
 expect "omits the body line when the failure has no body" \
   "no-body" "$(
-    result="$(run missing.json 500)"
+    result="$(run empty.json 500)"
     [[ "$result" != *body:* ]] && echo "no-body"
+  )"
+expect "caps the echoed body at 300 bytes" \
+  "capped" "$(
+    result="$(run long-error.json 500)"
+    [[ "$result" == *"body: xxx"* && "$result" != *PAST-THE-CAP* ]] && echo "capped"
   )"
 
 # Every error path must abort rather than fall through into launching Pi.

@@ -70,7 +70,7 @@ try {
   payload = JSON.parse(raw);
 } catch (err) {
   console.error(`error: oMLX returned a non-JSON response: ${err.message}`);
-  console.error(`body: ${raw.trim().slice(0, 100)}`);
+  console.error(`body: ${raw.trim().slice(0, 300)}`);
   process.exit(1);
 }
 
