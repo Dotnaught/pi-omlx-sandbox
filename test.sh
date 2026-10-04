@@ -59,6 +59,7 @@ fixture no-chat.json '{"models":[{"id":"nomic-embed","model_type":"embedding","l
 fixture legacy.json '{"models":[{"id":"legacy-model","loaded":true}]}'
 fixture bad-shape.json '{"data":[{"id":"x"}]}'
 fixture not-json.json '<html><body>502 Bad Gateway</body></html>'
+fixture server-error.json '{"detail":"engine pool is not initialized"}'
 fixture zero-ctx.json '{"models":[{"id":"m","model_type":"llm","loaded":true,"max_context_window":0}]}'
 
 pass=0
@@ -120,7 +121,14 @@ expect "distinguishes an unreachable server" \
 expect "distinguishes an auth rejection from an outage" \
   "skip API key verification" "$(run loaded.json 401)"
 expect "surfaces other HTTP failures" \
-  "returned HTTP 500" "$(run loaded.json 500)"
+  "returned HTTP 500" "$(run server-error.json 500)"
+expect "echoes the body of other HTTP failures" \
+  "body: {\"detail\":\"engine pool is not initialized\"}" "$(run server-error.json 500)"
+expect "omits the body line when the failure has no body" \
+  "no-body" "$(
+    result="$(run missing.json 500)"
+    [[ "$result" != *body:* ]] && echo "no-body"
+  )"
 
 # Every error path must abort rather than fall through into launching Pi.
 for case in "no-chat.json 200" "bad-shape.json 200" "not-json.json 200" \

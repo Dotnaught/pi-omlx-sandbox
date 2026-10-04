@@ -33,6 +33,10 @@ case "$code" in
   ;;
 *)
   echo "error: oMLX returned HTTP ${code} for ${status_url}" >&2
+  # The body usually carries oMLX's own reason, which the code alone hides.
+  if [[ -s "$response" ]]; then
+    echo "body: $(head -c 300 "$response")" >&2
+  fi
   exit 1
   ;;
 esac
