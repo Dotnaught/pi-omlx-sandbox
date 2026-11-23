@@ -77,7 +77,7 @@ export function selectModel(chat, pin) {
     throw new Error(
       `OMLX_MODEL "${pin}" is not served by oMLX as a chat model\n` +
         `available: ${chat.map((model) => model.id).join(", ")}\n` +
-        "hint: unset OMLX_MODEL in spec.yaml to track whatever oMLX has loaded",
+        "hint: recreate the sandbox without --kit-arg model to track whatever oMLX has loaded",
     );
   }
   return pin;
