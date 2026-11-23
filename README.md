@@ -91,53 +91,92 @@ installed.
 ./test.sh
 ```
 
-Covers `pi-start.sh` model selection, self-update and error paths against fixture payloads with `curl` and `pi` stubbed out, then `pi.yaml`, then the extension's refresh behaviour. Needs neither Docker nor a running oMLX for the first and last parts.
+Covers `pi-start.sh` model selection, self-update and error paths against fixture payloads with `curl` and `pi` stubbed out, `pi-sbx` against a stubbed `sbx`, then `pi.yaml`, then the extension's refresh behaviour. Needs neither Docker nor a running oMLX for the first and last parts.
 
 The `pi.yaml` checks build the kit and assert on `sbx kit inspect --json`, because a descriptor can be well-formed and still resolve to the wrong policy. They are skipped when `sbx` is not on `PATH`, and building the kit needs Docker Desktop and the sbx daemon running.
 
 ## Run
 
-```sh
-sbx run /path/to/pi-omlx-sandbox --name pi-omlx-sandbox /path/to/project
-```
-
-Two separate paths are involved:
-
-- **First positional path** — this repo, the kit. Passing it always creates a new sandbox, so pass it only when creating one (see [Resuming a session](#resuming-a-session)).
-- **Second positional path** — the project directory Pi will work in. sbx mounts it into the container.
-
-For example, to run Pi against `~/Code/repos/myapp`:
+Link `pi-sbx` onto your `PATH` once:
 
 ```sh
-sbx run ~/Code/repos/pi-omlx-sandbox --name pi-omlx-sandbox ~/Code/repos/myapp
+ln -s ~/Code/repos/pi-omlx-sandbox/pi-sbx ~/.local/bin/pi-sbx
 ```
 
-The first run builds the kit; later runs reuse the cached
-build until a file in this repo changes. If a sandbox named `pi-omlx-sandbox` already
-exists — for example after changing the kit — remove it first, which also deletes its
-session history:
+Then, from any project directory:
 
 ```sh
-sbx rm pi-omlx-sandbox
+pi-sbx                    # Pi on the current directory
+pi-sbx -- --continue      # continue the most recent session
+pi-sbx -- --resume        # pick a session interactively
+pi-sbx ~/Code/repos/myapp # Pi on another directory
 ```
 
-Mount additional directories by appending more paths. Add `:ro` to mount read-only:
+Each project gets its own sandbox, named after the directory plus a short hash of
+its path (`pi-myapp-1a2b3c4d`), so two projects that share a directory name never
+share a sandbox. The first run creates the sandbox from this kit; every later run
+re-attaches to it. `pi-sbx` prints the name when it creates one, and `sbx ls`
+lists them with their workspaces.
+
+Options that only apply when the sandbox is created:
 
 ```sh
-sbx run ~/Code/repos/pi-omlx-sandbox --name pi-omlx-sandbox ~/Code/repos/myapp ~/docs:ro
+pi-sbx -m qwen3-8b                          # make this oMLX model Pi's default
+pi-sbx ~/Code/repos/myapp ~/docs:ro          # mount more paths; :ro for read-only
 ```
 
-To persist extensions across sandbox recreations, mount your global Pi config directory read-only alongside the project:
+Passing either to an existing sandbox fails with the `sbx rm` command to run first.
+Removing a sandbox keeps its session history (see [Session history](#session-history)).
+
+Pi connects to oMLX on the host at `host.docker.internal:8010`.
+
+### Without the wrapper
+
+`pi-sbx` wraps two `sbx run` forms. A run that names the kit always creates a
+sandbox:
 
 ```sh
-sbx run ~/Code/repos/pi-omlx-sandbox --name pi-omlx-sandbox \
-  ~/Code/repos/myapp \
-  /Users/<username>/.pi/agent:ro
+sbx run ~/Code/repos/pi-omlx-sandbox --name pi-myapp ~/Code/repos/myapp
 ```
 
-Use the absolute path — sbx mounts directories at their literal host path inside the container, not remapped to the container user's home. Replace `<username>` with your macOS username (`whoami` will print it).
+Re-attaching leaves the kit out, and agent arguments go after `--`:
 
-For Pi to discover extensions from the mount, add the absolute path explicitly to `~/.pi/agent/settings.json` on your Mac:
+```sh
+sbx run --name pi-myapp -- --continue
+```
+
+### Path casing must match exactly
+
+macOS is case-insensitive, so `cd ~/code/repos/myapp` works even when the directory
+is really `~/Code/repos/myapp`. sbx mounts the workspace at its literal host path
+inside a Linux VM, which is case-sensitive, so a mismatched path fails there: the
+sandbox is still created, and the agent dies immediately:
+
+```
+OCI runtime exec failed: chdir to `/Users/<username>/code/repos/myapp`: No such file or directory
+ERROR: agent exited with code 127
+```
+
+`pi-sbx` resolves the project path with `realpath`, which returns the on-disk
+casing. Running `sbx run` by hand, pass `"$(realpath .)"` (or `"${PWD:A}"` in zsh)
+instead of `.`, which expands to `$PWD` with whatever casing you typed. `pwd -P`
+is not a substitute: it keeps the typed casing of the last component.
+
+The workspace mount is fixed at creation, so recovering from a failed run means
+removing the sandbox and creating it again.
+
+### Using your host Pi config
+
+To load extensions from your Mac's Pi config, mount it read-only when creating the
+sandbox:
+
+```sh
+pi-sbx ~/Code/repos/myapp ~/.pi/agent:ro
+```
+
+sbx mounts it at its literal host path (`/Users/<username>/.pi/agent`), not at the
+container user's home, so add that absolute path to `~/.pi/agent/settings.json` on
+your Mac for Pi to discover extensions from it:
 
 ```json
 {
@@ -147,59 +186,19 @@ For Pi to discover extensions from the mount, add the absolute path explicitly t
 }
 ```
 
-Pi reads this settings file from the mount at startup and loads extensions from the specified path. Skills come from the sbx skills store instead (see [Adding skills](#adding-skills)).
+Skills come from the sbx skills store instead (see [Adding skills](#adding-skills)).
 
-Pi connects to oMLX on the host at `host.docker.internal:8010`.
+### Session history
 
-### Path casing must match exactly
+Pi stores sessions under `~/.pi/agent/sessions`, grouped by working directory.
+`pi.yaml` puts that directory on an sbx volume, which outlives the sandbox: after
+`sbx rm`, creating a sandbox with the same name from this kit reattaches it, so
+`--continue` and `--resume` pick up where you left off. `pi-sbx` always derives
+the same name for a project, so removing and recreating a sandbox — to change the
+model, add a mount, or rebuild after editing the kit — keeps its history.
 
-macOS is case-insensitive, so `cd ~/code/repos/myapp` works even when the directory is really `~/Code/repos/myapp`. sbx exposes the host filesystem inside a Linux VM, which is case-sensitive, so a mismatched path fails to resolve there.
-
-The bind mount then fails with only a warning in the sandbox daemon log, the sandbox is still created, and the agent dies immediately:
-
-```
-OCI runtime exec failed: chdir to `/Users/<username>/code/repos/myapp`: No such file or directory
-ERROR: agent exited with code 127
-```
-
-Passing `.` does not avoid this. It expands to `$PWD`, which keeps whatever casing you typed when you changed into the directory.
-
-In zsh, `${PWD:A}` resolves against the filesystem and returns the true on-disk names, so it corrects the casing for you:
-
-```sh
-sbx run ~/Code/repos/pi-omlx-sandbox --name pi-omlx-sandbox "${PWD:A}" /Users/<username>/.pi/agent:ro
-```
-
-Quote it with single quotes when putting this in an alias, so it re-evaluates on each invocation. Note that `realpath` and Python's `os.path.realpath` are not substitutes — on macOS both return the path as typed, casing errors intact.
-
-Recovering from a failed run means deleting the sandbox and recreating it, since the workspace mount is fixed at creation time.
-
-### Resuming a session
-
-The sandbox container keeps running after you quit Pi, and Pi persists session history per project directory inside the container. To resume where you left off, re-attach by name without the kit path:
-
-```sh
-# Continue the most recent session
-sbx run --name pi-omlx-sandbox -- --continue
-
-# Pick a session interactively
-sbx run --name pi-omlx-sandbox -- --resume
-```
-
-Leave the kit path out when re-attaching. A run that names a local kit always creates a fresh sandbox, which loses the session history of the old one.
-
-Starting without `--continue` or `--resume` starts a fresh session but does not delete previous ones.
-
-### Switching to a different project
-
-Workspace mounts are fixed at creation time. To work on a different project directory, delete the sandbox and recreate it:
-
-```sh
-sbx rm pi-omlx-sandbox
-sbx run ~/Code/repos/pi-omlx-sandbox --name pi-omlx-sandbox ~/Code/repos/other-project
-```
-
-Deleting the sandbox also destroys all session history stored inside it.
+Starting without `--continue` or `--resume` starts a fresh session but does not
+delete previous ones.
 
 ## Changing the model
 
@@ -228,9 +227,10 @@ If oMLX is unreachable when a refresh runs, Pi warns (`Could not refresh omlx;
 searching cached models`) and keeps the catalog it already has, so the session
 carries on with the seed.
 
-To pin one model, add `ENV OMLX_MODEL=<id>` to `pi.dockerfile` with an exact
-model ID. Startup fails with the list of valid IDs if it does not match. Pinning sets
-the default model; it does not hide the others from `/model`.
+To pin one model, create the sandbox with `pi-sbx -m <id>` (or
+`sbx run ... --kit-arg model=<id>`) using an exact model ID. Startup fails with the
+list of valid IDs if it does not match. Pinning sets the default model; it does not
+hide the others from `/model`.
 
 ## Access limitations
 
@@ -240,6 +240,7 @@ the default model; it does not hide the others from `/model`.
 | Local network | Minimal | Open policy; Pi can reach any port on the host via `host.docker.internal` |
 | Internet | Minimal | Open policy; Pi can reach any domain |
 | Credentials | Proxy-managed | Tokens injected by proxy, never exposed in container env |
+| Git identity | Disclosed | Your Git `user.name` and `user.email` are set inside the sandbox so Pi's commits are attributed to you |
 
 Filesystem isolation is the primary protection. Pi runs inside a Docker container as a non-root `agent` user and can reach only the host paths passed to `sbx run` (read-only where marked `:ro`) and the sbx skills store, which is mounted read-only.
 
@@ -253,7 +254,7 @@ If tighter network control is needed, you would need to switch to a Balanced or 
 
 For project-specific instructions, add a `CLAUDE.md` or `AGENTS.md` to the project repo. Pi walks up the directory tree from the working directory and loads all matches, so project files layer on top of the global one automatically — no sandbox changes needed.
 
-After editing `CLAUDE.md`, remove the sandbox with `sbx rm pi-omlx-sandbox` and create it again with the `sbx run` command from [Run](#run), which rebuilds the kit because its source changed.
+After editing `CLAUDE.md`, remove the sandbox with `sbx rm <name>` and run `pi-sbx` again, which rebuilds the kit because its source changed. Session history is kept.
 
 ## Adding skills
 
@@ -281,7 +282,7 @@ The mount is on by default. `sbx run --skills=off` starts a sandbox without it.
 - Base: `docker/sandbox-templates:shell`, pinned by digest (`BASE_DIGEST` in `pi.dockerfile`), which provides Node.js. The `shell-docker` variant is avoided because it runs a Docker engine for the life of the sandbox
 - `@earendil-works/pi-coding-agent` (global npm install as `agent`, updated at every launch)
 - `fd` (pre-installed so Pi doesn't download it at runtime)
-- `uv` (pinned by `UV_VERSION` in `pi.dockerfile`) + `ruff` (Python toolchain)
+- `uv` and `ruff` (Python toolchain), pinned by `UV_VERSION` and `RUFF_VERSION` in `pi.dockerfile`
 - `pi-start.sh` — entrypoint that writes Pi's provider config, updates Pi, and launches the agent
 - `extensions/omlx/` — the oMLX provider extension, copied to `~/.pi/agent/extensions/`
 - `CLAUDE.md` — global instructions copied to `~/.pi/agent/CLAUDE.md`

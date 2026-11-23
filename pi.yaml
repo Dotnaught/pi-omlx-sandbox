@@ -5,8 +5,28 @@ displayName: Pi
 description: Terminal AI coding agent backed by a local oMLX model server
 sourceUrl: https://github.com/Dotnaught/pi-omlx-sandbox
 
+# Set at creation with `sbx run ... --kit-arg model=<id>`. Empty tracks
+# whatever oMLX has loaded; pi-start.sh treats an empty OMLX_MODEL as unset.
+args:
+  model:
+    default: ""
+    env: OMLX_MODEL
+    description: oMLX model ID to make Pi's default
+
 capabilities:
   - type: com.docker.sandbox/sbx@1
+
+  # Pi keys sessions by working directory, so one volume holds every project's
+  # history. It outlives `sbx rm` and reattaches when a sandbox of the same name
+  # is created from this kit again, so rebuilding the kit keeps history.
+  - type: com.docker.sandbox/volume@1
+    config:
+      path: /home/agent/.pi/agent/sessions
+
+  # Commits Pi makes carry the user's Git name and email. Optional, so a host
+  # with no identity configured still starts.
+  - type: com.docker.sandbox/git-identity@1
+    optional: true
 
   # oMLX serves its OpenAI-compatible API on the host at port 8010. Inside the
   # sandbox, the host is reachable via host.docker.internal, which can resolve

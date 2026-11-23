@@ -240,12 +240,88 @@ for bad in 'not json' '"a string"' '[1,2]' 'null'; do
     '"defaultProvider": "omlx"' "$(cat "$work/home/.pi/agent/settings.json")"
 done
 
+# pi-sbx runs against an sbx stub that lists SBX_EXISTING as its sandboxes and
+# echoes every other call, framed so a trailing extra argument fails a match.
+# /bin/bash is used on purpose: macOS ships bash 3.2, where an empty array
+# expansion under set -u is an error.
+mkdir -p "$work/sbxbin" "$work/projects/My App" "$work/projects/other/My App" \
+  "$work/projects/日本"
+cat >"$work/sbxbin/sbx" <<'EOF'
+#!/bin/bash
+if [[ "$1 ${2:-}" == "ls -q" ]]; then
+  [[ -n "${SBX_LS_FAIL:-}" ]] && exit 1
+  printf '%s\n' ${SBX_EXISTING:-}
+  exit 0
+fi
+printf 'SBX:'
+printf ' %s' "$@"
+printf ' <END>\n'
+EOF
+chmod +x "$work/sbxbin/sbx"
+
+wrap() { # cwd [pi-sbx args...]; prints output then "exit=N"
+  local dir="$1" output status
+  shift
+  output=$(cd "$dir" && PATH="$work/sbxbin:$PATH" /bin/bash "$script_dir/pi-sbx" "$@" 2>&1) &&
+    status=0 || status=$?
+  printf '%s\nexit=%s' "$output" "$status"
+}
+name_of() { sed -n 's/^SBX: run --name \([^ ]*\) .*/\1/p' <<<"$1"; }
+
+app="$work/projects/My App"
+app_real=$(cd "$app" && pwd -P)
+kit_real=$(cd "$script_dir" && pwd -P)
+created=$(wrap "$app")
+app_name=$(name_of "$created")
+expect "creates a sandbox from the kit on the current directory" \
+  "SBX: run --name $app_name $kit_real $app_real -- <END>" "$created"
+expect "names the sandbox from the sanitized directory name" "ok" \
+  "$([[ "$app_name" =~ ^pi-my-app-[0-9a-f]{8}$ ]] && echo ok || echo "$app_name")"
+expect "the name is stable across runs" "$app_name" "$(name_of "$(wrap "$app")")"
+other_name=$(name_of "$(wrap "$work/projects/other/My App")")
+expect "same-named projects in different places get different sandboxes" "ok" \
+  "$([[ -n "$other_name" && "$other_name" != "$app_name" ]] && echo ok)"
+expect "falls back to a generic name when nothing in the directory name is usable" "ok" \
+  "$([[ "$(name_of "$(wrap "$work/projects/日本")")" =~ ^pi-project-[0-9a-f]{8}$ ]] && echo ok)"
+expect "takes the project directory as an argument" \
+  "SBX: run --name $app_name $kit_real $app_real -- <END>" "$(wrap / "$app")"
+pinned="SBX: run --name $app_name --kit-arg model=qwen3-8b $kit_real $app_real"
+expect "passes the model pin and extra mounts when creating" \
+  "$pinned /tmp:ro -- --continue <END>" "$(wrap / -m qwen3-8b "$app" /tmp:ro -- --continue)"
+expect "re-attaches by name, without the kit, when the sandbox exists" \
+  "SBX: run --name $app_name -- --resume <END>" \
+  "$(SBX_EXISTING="other $app_name" wrap "$app" -- --resume)"
+refused=$(SBX_EXISTING="$app_name" wrap "$app" -m qwen3-8b)
+expect "refuses a model pin for an existing sandbox" "only when creating it" "$refused"
+expect "says how to recreate it" "hint: sbx rm $app_name" "$refused"
+expect "exits non-zero when refusing" "exit=1" "$refused"
+expect "refuses extra mounts for an existing sandbox" "only when creating it" \
+  "$(SBX_EXISTING="$app_name" wrap / "$app" /tmp:ro)"
+expect "rejects a missing project directory" "error: not a directory: /nonexistent" \
+  "$(wrap / /nonexistent)"
+expect "rejects -m without a value" "error: -m needs a model ID" "$(wrap "$app" -m)"
+expect "rejects unknown options" "error: unknown option: --bogus" "$(wrap "$app" --bogus)"
+listing_failed=$(SBX_LS_FAIL=1 wrap "$app")
+expect "fails fast when sandboxes cannot be listed" "error: could not list sandboxes" \
+  "$listing_failed"
+expect "does not try to create a sandbox when listing fails" "ok" \
+  "$([[ "$listing_failed" != *"SBX: run"* ]] && echo ok)"
+# Only meaningful where the filesystem ignores case, as macOS does by default.
+if [[ -d "$work/projects/my app" ]]; then
+  expect "mounts the on-disk casing, not the typed one" \
+    "SBX: run --name $app_name $kit_real $app_real -- <END>" \
+    "$(wrap / "$work/projects/my app")"
+else
+  echo "skip - case-sensitive filesystem; casing check skipped"
+fi
+
 # `sbx kit inspect --json` drops the entry-level `optional` flag and the whole
-# agent-skills capability, so these are read from pi.yaml itself. Losing
-# `optional: true` makes the sandbox refuse to start without a github secret, or
-# under `sbx run --skills=off`, while every other check still passes.
+# agent-skills and git-identity capabilities, so these are read from pi.yaml
+# itself. Losing `optional: true` makes the sandbox refuse to start without a
+# github secret, under `sbx run --skills=off`, or on a host with no Git
+# identity, while every other check still passes.
 capabilities=$(awk '
-  /^  - type: / { type = $3 }
+  /^  - type: / { type = $3; print "type:" type }
   type && /^    optional: true$/ { print "optional:" type }
   type && /^      path: / { print "path:" type "=" $2 }
 ' "$script_dir/pi.yaml")
@@ -255,6 +331,10 @@ expect "the skills mount is optional" \
   "optional:com.docker.sandbox/agent-skills@1" "$capabilities"
 expect "the skills store mounts where Pi reads global skills" \
   "path:com.docker.sandbox/agent-skills@1=/home/agent/.pi/agent/skills" "$capabilities"
+expect "commits carry the user's Git identity" \
+  "type:com.docker.sandbox/git-identity@1" "$capabilities"
+expect "the Git identity is optional" \
+  "optional:com.docker.sandbox/git-identity@1" "$capabilities"
 
 # A well-formed descriptor can still resolve to the wrong policy, and `sbx kit
 # validate` does not accept a v3 source kit at all, so build the kit and assert
@@ -286,6 +366,8 @@ process.stdin.on("end", () => {
     "omlx-port": allow.find((d) => d.startsWith("host.docker.internal:"))?.split(":")[1] ?? "none",
     "npm-allowed": allowedHosts.has("registry.npmjs.org") ? "yes" : "no",
     "entrypoint": (kit.sandbox?.entrypoint ?? ["missing"]).join(" "),
+    "volumes": (kit.volumes ?? []).map((v) => v.path).join(",") || "none",
+    "model-env": JSON.stringify(kit.environment?.variables?.OMLX_MODEL ?? null),
   };
   for (const [k, v] of Object.entries(out)) console.log(`${k}=${v}`);
 });
@@ -317,6 +399,11 @@ process.stdin.on("end", () => {
     expect "the npm registry is reachable for pi update" "npm-allowed=yes" "$spec"
     expect "the entrypoint matches the path pi.dockerfile installs" \
       "entrypoint=/usr/local/bin/pi-start.sh" "$spec"
+    expect "sessions persist on a volume where Pi stores them" \
+      "volumes=/home/agent/.pi/agent/sessions" "$spec"
+    # A non-empty default would pin every sandbox to one model, and a missing
+    # export would make --kit-arg model a silent no-op.
+    expect "the model arg reaches OMLX_MODEL, empty by default" 'model-env=""' "$spec"
   fi
 else
   echo "skip - sbx not installed; pi.yaml checks skipped"

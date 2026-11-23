@@ -2,7 +2,7 @@
 # one starts a Docker engine that runs for the sandbox's lifetime, and setting
 # com.docker.sandboxes.start-docker=false on top of it breaks sandbox startup.
 # Pinned by digest; bump it deliberately to take template updates.
-ARG BASE_DIGEST=sha256:c66aa9c0212bb710089cc356501f8bde8989e02a7071bf1c6be0893be1c30adf
+ARG BASE_DIGEST=sha256:7a248c96459694d181d9d51ffc9e530c0b9a4cb3d1887cc070425336b1fb5115
 FROM docker/sandbox-templates:shell@${BASE_DIGEST}
 
 USER root
@@ -22,9 +22,10 @@ USER agent
 RUN node --version && \
     npm install -g @earendil-works/pi-coding-agent && \
     pi --version
-ARG UV_VERSION=0.12.18
+ARG UV_VERSION=0.13.9
+ARG RUFF_VERSION=0.17.6
 RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
-    ~/.local/bin/uv tool install ruff
+    ~/.local/bin/uv tool install "ruff==${RUFF_VERSION}"
 
 ENV OMLX_PORT=8010
 ENTRYPOINT ["/usr/local/bin/pi-start.sh"]

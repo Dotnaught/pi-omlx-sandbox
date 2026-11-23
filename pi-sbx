@@ -1,0 +1,98 @@
+#!/bin/bash
+# Runs Pi in a per-project sandbox: creates it from this kit on first use and
+# re-attaches on every later run, so there is no create-versus-attach choice.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: pi-sbx [-m MODEL] [PROJECT_DIR [EXTRA_MOUNT...]] [-- PI_ARGS...]
+
+Runs Pi on PROJECT_DIR (default: the current directory) in a sandbox of its own.
+The first run creates the sandbox; later runs re-attach to it.
+
+  -m MODEL     oMLX model ID to make Pi's default (only when creating)
+  EXTRA_MOUNT  further host paths to mount, PATH[:ro] (only when creating)
+  PI_ARGS      passed to Pi, e.g. -- --continue or -- --resume
+
+Model and mounts are fixed at creation. To change them, remove the sandbox with
+the `sbx rm` command pi-sbx prints; session history survives on its volume.
+EOF
+}
+
+die() {
+  echo "error: $1" >&2
+  [[ -n "${2:-}" ]] && echo "hint: $2" >&2
+  exit 1
+}
+
+# sbx mounts the workspace at its literal host path inside a case-sensitive VM,
+# so the path must carry the on-disk casing, not whatever casing was typed.
+resolve_dir() {
+  [[ -d "$1" ]] || die "not a directory: $1" "pass the project directory Pi should work in"
+  # realpath, not `pwd -P`: on macOS the latter keeps the typed casing of the
+  # last component.
+  realpath "$1"
+}
+
+# Sandbox names allow 2-63 letters, digits and hyphens. The hash keeps two
+# projects with the same directory name from sharing a sandbox.
+sandbox_name() {
+  local slug hash
+  slug=$(basename "$1" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-')
+  slug="${slug#-}"
+  slug="${slug%-}"
+  slug="${slug:0:40}"
+  slug="${slug%-}"
+  hash=$(printf '%s' "$1" | shasum -a 256 | cut -c1-8)
+  echo "pi-${slug:-project}-${hash}"
+}
+
+kit_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd -P)"
+model=""
+paths=()
+pi_args=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  -m)
+    [[ $# -ge 2 && -n "$2" ]] || die "-m needs a model ID" "list IDs in the oMLX admin panel"
+    model="$2"
+    shift 2
+    ;;
+  --)
+    shift
+    pi_args=("$@")
+    break
+    ;;
+  -*) die "unknown option: $1" "run pi-sbx --help" ;;
+  *)
+    paths+=("$1")
+    shift
+    ;;
+  esac
+done
+
+project=$(resolve_dir "${paths[0]:-$PWD}")
+name=$(sandbox_name "$project")
+
+existing=$(sbx ls -q) || die "could not list sandboxes" "check the daemon with: sbx daemon status"
+
+if grep -Fxq "$name" <<<"$existing"; then
+  if [[ -n "$model" || ${#paths[@]} -gt 1 ]]; then
+    die "sandbox $name already exists; -m and extra mounts apply only when creating it" \
+      "sbx rm $name, then run pi-sbx again (session history is kept)"
+  fi
+  exec sbx run --name "$name" -- ${pi_args[@]+"${pi_args[@]}"}
+fi
+
+create=(sbx run --name "$name")
+[[ -n "$model" ]] && create+=(--kit-arg "model=$model")
+create+=("$kit_dir" "$project")
+[[ ${#paths[@]} -gt 1 ]] && create+=("${paths[@]:1}")
+
+echo "pi-sbx: creating sandbox $name for $project" >&2
+exec "${create[@]}" -- ${pi_args[@]+"${pi_args[@]}"}
