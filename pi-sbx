@@ -5,16 +5,21 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-usage: pi-sbx [-m MODEL] [PROJECT_DIR [EXTRA_MOUNT...]] [-- PI_ARGS...]
+usage: pi-sbx [-m MODEL] [-H MODEL] [-t] [PROJECT_DIR [EXTRA_MOUNT...]] [-- PI_ARGS...]
 
 Runs Pi on PROJECT_DIR (default: the current directory) in a sandbox of its own.
 The first run creates the sandbox; later runs re-attach to it.
 
   -m MODEL     oMLX model ID to make Pi's default (only when creating)
+  -H MODEL     TrustedRouter model, trustedrouter/<id>, for -t and for the
+               fallback when oMLX is down (only when creating; default
+               trustedrouter/confidential)
+  -t           start this session on the sandbox's TrustedRouter model and
+               skip oMLX; for another one, pass -- --model trustedrouter/<id>
   EXTRA_MOUNT  further host paths to mount, PATH[:ro] (only when creating)
   PI_ARGS      passed to Pi, e.g. -- --continue or -- --resume
 
-Model and mounts are fixed at creation. To change them, remove the sandbox with
+Models and mounts are fixed at creation. To change them, remove the sandbox with
 the `sbx rm` command pi-sbx prints; session history survives on its volume.
 EOF
 }
@@ -49,6 +54,8 @@ sandbox_name() {
 
 kit_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd -P)"
 model=""
+hosted_model=""
+hosted=false
 paths=()
 pi_args=()
 
@@ -63,6 +70,17 @@ while [[ $# -gt 0 ]]; do
     model="$2"
     shift 2
     ;;
+  -H)
+    [[ $# -ge 2 && "$2" == trustedrouter/?* ]] ||
+      die "-H needs a TrustedRouter model ID, trustedrouter/<id>" \
+        "list IDs with: pi --list-models trustedrouter"
+    hosted_model="$2"
+    shift 2
+    ;;
+  -t)
+    hosted=true
+    shift
+    ;;
   --)
     shift
     pi_args=("$@")
@@ -76,14 +94,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Unlike -m and -H, this is a per-launch choice, so it travels as a launch
+# argument rather than a kit arg fixed at creation. pi-start.sh consumes the
+# marker and substitutes the sandbox's hosted model, which only it can see.
+if $hosted; then
+  pi_args=(--hosted ${pi_args[@]+"${pi_args[@]}"})
+fi
+
 project=$(resolve_dir "${paths[0]:-$PWD}")
 name=$(sandbox_name "$project")
 
 existing=$(sbx ls -q) || die "could not list sandboxes" "check the daemon with: sbx daemon status"
 
 if grep -Fxq "$name" <<<"$existing"; then
-  if [[ -n "$model" || ${#paths[@]} -gt 1 ]]; then
-    die "sandbox $name already exists; -m and extra mounts apply only when creating it" \
+  if [[ -n "$model" || -n "$hosted_model" || ${#paths[@]} -gt 1 ]]; then
+    die "sandbox $name already exists; -m, -H and extra mounts apply only when creating it" \
       "sbx rm $name, then run pi-sbx again (session history is kept)"
   fi
   exec sbx run --name "$name" -- ${pi_args[@]+"${pi_args[@]}"}
@@ -91,6 +116,7 @@ fi
 
 create=(sbx run --name "$name")
 [[ -n "$model" ]] && create+=(--kit-arg "model=$model")
+[[ -n "$hosted_model" ]] && create+=(--kit-arg "hosted_model=$hosted_model")
 create+=("$kit_dir" "$project")
 [[ ${#paths[@]} -gt 1 ]] && create+=("${paths[@]:1}")
 

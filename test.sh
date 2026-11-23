@@ -1,8 +1,9 @@
 #!/bin/bash
 # Exercises pi-start.sh model selection, self-update and error paths against
-# fixture payloads with curl and pi stubbed out, then pi.yaml and the
-# extension's behaviour. Needs neither Docker nor a running oMLX, except to
-# build the kit for the pi.yaml checks.
+# fixture payloads with curl and pi stubbed out, including the TrustedRouter
+# fallback and direct launches, then pi.yaml and both extensions' behaviour.
+# Needs neither Docker nor a running oMLX, except to build the kit for the
+# pi.yaml checks.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,6 +19,7 @@ if [[ "${1:-}" == "update" ]]; then
   exit "${PI_UPDATE_STATUS:-0}"
 fi
 echo "PI_ARGS: $*"
+echo "PI_ENV: OMLX_BASE_URL=${OMLX_BASE_URL:-unset}"
 EOF
 
 cat >"$work/bin/curl" <<'EOF'
@@ -33,6 +35,7 @@ while [[ $# -gt 0 ]]; do
     *) shift ;;
   esac
 done
+[[ -n "${CURL_LOG:-}" ]] && echo called >>"$CURL_LOG"
 [[ -n "$out" && -f "${FIXTURE:-}" ]] && cp "$FIXTURE" "$out"
 printf '%s' "${HTTP_CODE:-200}"
 [[ "${HTTP_CODE:-200}" == "000" ]] && exit 7
@@ -68,14 +71,20 @@ pass=0
 fail=0
 
 # Prints the entrypoint's combined output followed by "exit=N", so assertions
-# can cover the exit status as well as the message.
-launch() { # fixture http_code [omlx_model] -- keeps whatever $HOME already holds
-  local output status
+# can cover the exit status as well as the message. TR_KEY stands in for the
+# sbx placeholder; it is set explicitly so a key in the caller's environment
+# cannot switch the oMLX-down cases onto the TrustedRouter fallback.
+launch() { # fixture http_code [omlx_model [pi_args...]] -- keeps whatever $HOME already holds
+  local fixture="$1" code="$2" pin="${3:-}" output status
+  shift 2
+  [[ $# -gt 0 ]] && shift
   output=$(
-    env PATH="$work/bin:$PATH" HOME="$work/home" FIXTURE="$work/$1" \
-      HTTP_CODE="$2" OMLX_MODEL="${3:-}" PI_UPDATE_STATUS="${PI_UPDATE_STATUS:-0}" OMLX_PORT=8010 \
+    env PATH="$work/bin:$PATH" HOME="$work/home" FIXTURE="$work/$fixture" \
+      HTTP_CODE="$code" OMLX_MODEL="$pin" PI_UPDATE_STATUS="${PI_UPDATE_STATUS:-0}" OMLX_PORT=8010 \
       OMLX_CATALOG="$script_dir/extensions/omlx/catalog.mjs" \
-      bash "$script_dir/pi-start.sh" 2>&1
+      TRUSTEDROUTER_API_KEY="${TR_KEY:-}" TRUSTEDROUTER_MODEL="${TR_MODEL:-}" \
+      CURL_LOG="$work/curl.log" \
+      bash "$script_dir/pi-start.sh" "$@" 2>&1
   ) && status=0 || status=$?
   printf '%s\nexit=%s' "$output" "$status"
 }
@@ -161,6 +170,100 @@ expect "exits non-zero without OMLX_PORT" "exit=1" "exit=$status"
 expect "does not launch Pi without OMLX_PORT" "no-launch" "$(
   [[ "$result" != *PI_ARGS* && "$result" != *PI_UPDATE* ]] && echo "no-launch"
 )"
+
+# oMLX down with a TrustedRouter key: fall back instead of exiting.
+fallback=$(TR_KEY=sbx-cs-test run loaded.json 000)
+expect "falls back to TrustedRouter when oMLX is unreachable" \
+  "PI_ARGS: --model trustedrouter/confidential" "$fallback"
+expect "says why it fell back" "warning: cannot reach oMLX" "$fallback"
+expect "launches successfully on the fallback" "exit=0" "$fallback"
+expect "updates Pi before the fallback launch" "update-first" "$(
+  [[ "$fallback" == *PI_UPDATE*PI_ARGS* ]] && echo "update-first"
+)"
+expect "still points the oMLX extension at the host on the fallback" \
+  "PI_ENV: OMLX_BASE_URL=http://host.docker.internal:8010/v1" "$fallback"
+expect "passes Pi arguments through on the fallback" \
+  "PI_ARGS: --model trustedrouter/confidential --continue" \
+  "$(TR_KEY=sbx-cs-test run loaded.json 000 "" --continue)"
+fixture proxy-502.json 'sbx proxy: upstream request to localhost:8010 failed: EOF'
+expect "falls back when the sbx proxy reports oMLX down" \
+  "PI_ARGS: --model trustedrouter/confidential" "$(TR_KEY=sbx-cs-test run proxy-502.json 502)"
+expect "reports the proxy's 502 as an unreachable oMLX" \
+  "cannot reach oMLX" "$(run proxy-502.json 502)"
+expect "still treats a 502 from oMLX itself as an HTTP failure" \
+  "returned HTTP 502" "$(TR_KEY=sbx-cs-test run server-error.json 502)"
+expect "falls back to the sandbox's hosted model when one is set" \
+  "PI_ARGS: --model trustedrouter/z-ai/glm-5.3-flash" \
+  "$(TR_KEY=sbx-cs-test TR_MODEL=trustedrouter/z-ai/glm-5.3-flash run loaded.json 000)"
+expect "suggests a TrustedRouter key when oMLX is unreachable without one" \
+  "store a TrustedRouter key" "$(run loaded.json 000)"
+# A reachable oMLX that refuses is misconfigured, not down, so it still aborts.
+expect "does not fall back on an oMLX auth rejection" "exit=1" \
+  "$(TR_KEY=sbx-cs-test run loaded.json 401)"
+expect "keeps the oMLX default when oMLX is up, even with a key" \
+  "PI_ARGS: --model omlx/Qwen3.6-35B" "$(TR_KEY=sbx-cs-test run loaded.json 200)"
+
+# An explicit TrustedRouter model (pi-sbx -t) skips oMLX entirely.
+for form in "--model trustedrouter/z-ai/glm-5.3" "--model=trustedrouter/z-ai/glm-5.3"; do
+  rm -f "$work/curl.log"
+  # shellcheck disable=SC2086  # deliberate word splitting of the argument form
+  direct=$(TR_KEY=sbx-cs-test run loaded.json 200 "" $form --continue)
+  expect "launches the requested TrustedRouter model ($form)" \
+    "PI_ARGS: $form --continue" "$direct"
+  expect "updates Pi before a TrustedRouter launch ($form)" "update-first" "$(
+    [[ "$direct" == *PI_UPDATE*PI_ARGS* ]] && echo "update-first"
+  )"
+  expect "adds no oMLX model to a TrustedRouter launch ($form)" "no-omlx" "$(
+    [[ "$direct" != *omlx/* ]] && echo "no-omlx"
+  )"
+  expect "does not probe oMLX for a TrustedRouter launch ($form)" "not-probed" "$(
+    [[ ! -e "$work/curl.log" ]] && echo "not-probed"
+  )"
+done
+# --hosted is the marker pi-sbx -t sends; pi-start.sh swaps in the hosted model.
+rm -f "$work/curl.log"
+marked=$(TR_KEY=sbx-cs-test run loaded.json 200 "" --hosted --continue)
+expect "--hosted starts on the default hosted model" \
+  "PI_ARGS: --model trustedrouter/confidential --continue" "$marked"
+expect "--hosted does not probe oMLX" "not-probed" "$(
+  [[ ! -e "$work/curl.log" ]] && echo "not-probed"
+)"
+expect "--hosted is consumed, not passed to Pi" "consumed" "$(
+  [[ "$marked" != *--hosted* ]] && echo "consumed"
+)"
+expect "--hosted starts on the sandbox's hosted model when one is set" \
+  "PI_ARGS: --model trustedrouter/z-ai/glm-5.3 --continue" \
+  "$(TR_KEY=sbx-cs-test TR_MODEL=trustedrouter/z-ai/glm-5.3 \
+    run loaded.json 200 "" --hosted --continue)"
+expect "--hosted without a key is refused" "needs a TrustedRouter key" \
+  "$(run loaded.json 200 "" --hosted)"
+# Only a leading marker is pi-sbx's; later on it belongs to Pi's own arguments.
+expect "leaves a --hosted that is not first to Pi" \
+  "PI_ARGS: --model omlx/Qwen3.6-35B --continue --hosted" \
+  "$(TR_KEY=sbx-cs-test run loaded.json 200 "" --continue --hosted)"
+for bad in "z-ai/glm-5.3" "trustedrouter/" "omlx/gemma-4-27b"; do
+  bad_model=$(TR_KEY=sbx-cs-test TR_MODEL="$bad" run loaded.json 200)
+  expect "rejects a hosted model that is not a TrustedRouter ID: $bad" \
+    "is not a TrustedRouter model ID" "$bad_model"
+  expect "does not launch Pi with a bad hosted model: $bad" "exit=1" "$bad_model"
+done
+
+direct=$(TR_KEY=sbx-cs-test run loaded.json 000 "" --model trustedrouter/confidential)
+expect "starts a TrustedRouter launch without warning that oMLX is down" "no-warning" "$(
+  [[ "$direct" != *"cannot reach oMLX"* && "$direct" == *exit=0 ]] && echo "no-warning"
+)"
+keyless=$(run loaded.json 200 "" --model trustedrouter/confidential)
+expect "refuses a TrustedRouter launch without a key" "needs a TrustedRouter key" "$keyless"
+expect "says how to store the key" "sbx secret set-custom" "$keyless"
+expect "exits non-zero without a key" "exit=1" "$keyless"
+expect "does not launch Pi without a key" "no-launch" "$(
+  [[ "$keyless" != *PI_ARGS* && "$keyless" != *PI_UPDATE* ]] && echo "no-launch"
+)"
+expect "treats a non-TrustedRouter --model as an oMLX launch" \
+  "PI_ARGS: --model omlx/Qwen3.6-35B --model omlx/gemma-4-27b" \
+  "$(TR_KEY=sbx-cs-test run loaded.json 200 "" --model omlx/gemma-4-27b)"
+expect "tolerates a trailing --model with no value" "exit=0" \
+  "$(run loaded.json 200 "" --model)"
 
 result=$(run loaded.json 200)
 expect "updates Pi on launch" "PI_UPDATE: update --self" "$result"
@@ -300,6 +403,26 @@ expect "refuses extra mounts for an existing sandbox" "only when creating it" \
 expect "rejects a missing project directory" "error: not a directory: /nonexistent" \
   "$(wrap / /nonexistent)"
 expect "rejects -m without a value" "error: -m needs a model ID" "$(wrap "$app" -m)"
+expect "-t starts a new sandbox on its hosted model" \
+  "SBX: run --name $app_name $kit_real $app_real -- --hosted <END>" \
+  "$(wrap "$app" -t)"
+expect "-t applies on re-attach and keeps other Pi arguments" \
+  "SBX: run --name $app_name -- --hosted --continue <END>" \
+  "$(SBX_EXISTING="$app_name" wrap "$app" -t -- --continue)"
+expect "-H sets the hosted model when creating" \
+  "SBX: run --name $app_name --kit-arg hosted_model=trustedrouter/z-ai/glm-5.3 $kit_real" \
+  "$(wrap "$app" -H trustedrouter/z-ai/glm-5.3)"
+expect "-H combines with -m" \
+  "--kit-arg model=qwen3-8b --kit-arg hosted_model=trustedrouter/z-ai/glm-5.3 " \
+  "$(wrap "$app" -m qwen3-8b -H trustedrouter/z-ai/glm-5.3)"
+for bad in "" "z-ai/glm-5.3" "trustedrouter/"; do
+  expect "-H rejects '$bad'" "error: -H needs a TrustedRouter model ID" \
+    "$(wrap "$app" -H "$bad")"
+done
+expect "-H rejects a missing value" "error: -H needs a TrustedRouter model ID" \
+  "$(wrap "$app" -H)"
+expect "refuses a hosted model for an existing sandbox" "only when creating it" \
+  "$(SBX_EXISTING="$app_name" wrap "$app" -H trustedrouter/z-ai/glm-5.3)"
 expect "rejects unknown options" "error: unknown option: --bogus" "$(wrap "$app" --bogus)"
 listing_failed=$(SBX_LS_FAIL=1 wrap "$app")
 expect "fails fast when sandboxes cannot be listed" "error: could not list sandboxes" \
@@ -365,9 +488,11 @@ process.stdin.on("end", () => {
     "network-allow-empty": allow.length === 0 ? "yes" : "no",
     "omlx-port": allow.find((d) => d.startsWith("host.docker.internal:"))?.split(":")[1] ?? "none",
     "npm-allowed": allowedHosts.has("registry.npmjs.org") ? "yes" : "no",
+    "trustedrouter-allowed": allowedHosts.has("api.trustedrouter.com") ? "yes" : "no",
     "entrypoint": (kit.sandbox?.entrypoint ?? ["missing"]).join(" "),
     "volumes": (kit.volumes ?? []).map((v) => v.path).join(",") || "none",
     "model-env": JSON.stringify(kit.environment?.variables?.OMLX_MODEL ?? null),
+    "hosted-model-env": JSON.stringify(kit.environment?.variables?.TRUSTEDROUTER_MODEL ?? null),
   };
   for (const [k, v] of Object.entries(out)) console.log(`${k}=${v}`);
 });
@@ -397,6 +522,8 @@ process.stdin.on("end", () => {
     expect "the allow list opens the port OMLX_PORT names" \
       "omlx-port=${dockerfile_port:-unset}" "$spec"
     expect "the npm registry is reachable for pi update" "npm-allowed=yes" "$spec"
+    # The sbx custom secret only swaps its placeholder on hosts the policy opens.
+    expect "TrustedRouter's inference host is reachable" "trustedrouter-allowed=yes" "$spec"
     expect "the entrypoint matches the path pi.dockerfile installs" \
       "entrypoint=/usr/local/bin/pi-start.sh" "$spec"
     expect "sessions persist on a volume where Pi stores them" \
@@ -404,6 +531,9 @@ process.stdin.on("end", () => {
     # A non-empty default would pin every sandbox to one model, and a missing
     # export would make --kit-arg model a silent no-op.
     expect "the model arg reaches OMLX_MODEL, empty by default" 'model-env=""' "$spec"
+    # pi-start.sh owns the hosted default; a second copy here could drift from it.
+    expect "the hosted_model arg reaches TRUSTEDROUTER_MODEL, empty by default" \
+      'hosted-model-env=""' "$spec"
   fi
 else
   echo "skip - sbx not installed; pi.yaml checks skipped"
@@ -415,4 +545,5 @@ echo "passed: $pass  failed: $fail"
 
 echo
 echo "--- extension ---"
-node --test "$script_dir/test-extension.mjs"
+node --test "$script_dir/test-extension.mjs" "$script_dir/test-trustedrouter.mjs" \
+  "$script_dir/test-trustedrouter-privacy.mjs"

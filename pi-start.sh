@@ -12,6 +12,70 @@ status_url="${base_url}/v1/models/status"
 config_dir="$HOME/.pi/agent"
 catalog="${OMLX_CATALOG:-$config_dir/extensions/omlx/catalog.mjs}"
 
+# The sandbox's hosted model: where `--hosted` (pi-sbx -t) starts, and where a
+# session starts when oMLX is down. Set at creation with the hosted_model kit
+# arg (pi-sbx -H); empty means TrustedRouter's confidential pool.
+hosted_default="${TRUSTEDROUTER_MODEL:-trustedrouter/confidential}"
+if [[ "$hosted_default" != trustedrouter/?* ]]; then
+  echo "error: TRUSTEDROUTER_MODEL \"${hosted_default}\" is not a TrustedRouter model ID" >&2
+  echo "hint: recreate the sandbox with pi-sbx -H trustedrouter/<id>; list IDs with" \
+    "pi --list-models trustedrouter" >&2
+  exit 1
+fi
+
+# The oMLX extension reads this even in a hosted session, so models served by
+# an oMLX started mid-session appear the next time the model picker opens.
+export OMLX_BASE_URL="${base_url}/v1"
+
+# Pi tracks upstream by updating itself at launch rather than by image rebuilds.
+# A failed update (registry unreachable, npm error) must not cost the session,
+# so it falls back to the version already installed.
+update_pi() {
+  if ! pi update --self; then
+    echo "warning: could not update Pi; launching the installed version" >&2
+  fi
+}
+
+# pi-sbx -t runs on the host and cannot see this sandbox's hosted model, so it
+# sends this marker, which must come first, and the model is filled in here.
+if [[ "${1:-}" == "--hosted" ]]; then
+  shift
+  set -- --model "$hosted_default" "$@"
+fi
+
+# Prints the model when Pi's own arguments select a TrustedRouter one
+# (`--model trustedrouter/...`), and nothing otherwise.
+requested_hosted_model() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --model=trustedrouter/*)
+      printf '%s' "${1#--model=}"
+      return
+      ;;
+    --model)
+      if [[ "${2:-}" == trustedrouter/* ]]; then
+        printf '%s' "$2"
+        return
+      fi
+      ;;
+    esac
+    shift
+  done
+}
+
+trustedrouter_configured() { [[ -n "${TRUSTEDROUTER_API_KEY:-}" ]]; }
+
+hosted=$(requested_hosted_model "$@")
+if [[ -n "$hosted" ]]; then
+  if ! trustedrouter_configured; then
+    echo "error: ${hosted} needs a TrustedRouter key, but TRUSTEDROUTER_API_KEY is not set" >&2
+    echo "hint: store it with sbx secret set-custom (README step 5), then recreate the sandbox" >&2
+    exit 1
+  fi
+  update_pi
+  exec pi "$@"
+fi
+
 response=$(mktemp)
 trap 'rm -f "$response"' EXIT
 
@@ -19,11 +83,26 @@ trap 'rm -f "$response"' EXIT
 # adds the `loaded` flag, `model_type` and context limits Pi needs.
 code=$(curl -s -o "$response" -w '%{http_code}' --max-time 10 "$status_url") || code="000"
 
+# Inside a sandbox the connection is to the sbx proxy, not oMLX, so a stopped
+# oMLX shows up as the proxy's own HTTP 502 rather than a refused connection.
+if [[ "$code" == "502" && "$(head -c 10 "$response")" == "sbx proxy:" ]]; then
+  code="000"
+fi
+
 case "$code" in
 200) ;;
 000)
+  if trustedrouter_configured; then
+    echo "warning: cannot reach oMLX at ${status_url}; starting on ${hosted_default}" >&2
+    echo "hint: once oMLX is running, pick an omlx model with /model" >&2
+    # exec replaces this shell, so the EXIT trap never runs.
+    rm -f "$response"
+    update_pi
+    exec pi --model "$hosted_default" "$@"
+  fi
   echo "error: cannot reach oMLX at ${status_url}" >&2
   echo "hint: start oMLX on the host, then restart the sandbox" >&2
+  echo "hint: or store a TrustedRouter key (README step 5) to fall back to hosted models" >&2
   exit 1
   ;;
 401 | 403)
@@ -135,17 +214,8 @@ process.stdout.write(selected);
 '
 )
 
-# The extension reads this to reach the same server the seed was built from.
-export OMLX_BASE_URL="${base_url}/v1"
-
 # exec replaces this shell, so the EXIT trap never runs.
 rm -f "$response"
 
-# Pi tracks upstream by updating itself at launch rather than by image rebuilds.
-# A failed update (registry unreachable, npm error) must not cost the session,
-# so it falls back to the version already installed.
-if ! pi update --self; then
-  echo "warning: could not update Pi; launching the installed version" >&2
-fi
-
+update_pi
 exec pi --model "omlx/${model}" "$@"

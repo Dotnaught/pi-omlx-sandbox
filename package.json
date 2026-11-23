@@ -1,0 +1,13 @@
+{
+  "name": "pi-omlx-sandbox",
+  "private": true,
+  "type": "module",
+  "description": "Pi package exposing the TrustedRouter confidential-compute provider extension",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./extensions/trustedrouter/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

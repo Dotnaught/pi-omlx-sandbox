@@ -2,7 +2,9 @@
 schemaVersion: "3"
 kind: workload
 displayName: Pi
-description: Terminal AI coding agent backed by a local oMLX model server
+description: >-
+  Terminal AI coding agent backed by a local oMLX model server, with optional
+  confidential-compute models from TrustedRouter
 sourceUrl: https://github.com/Dotnaught/pi-omlx-sandbox
 
 # Set at creation with `sbx run ... --kit-arg model=<id>`. Empty tracks
@@ -12,6 +14,13 @@ args:
     default: ""
     env: OMLX_MODEL
     description: oMLX model ID to make Pi's default
+
+  # Set with `pi-sbx -H` or `--kit-arg hosted_model=trustedrouter/<id>`. Empty
+  # means trustedrouter/confidential; pi-start.sh holds that default.
+  hosted_model:
+    default: ""
+    env: TRUSTEDROUTER_MODEL
+    description: TrustedRouter model for pi-sbx -t and for when oMLX is down
 
 capabilities:
   - type: com.docker.sandbox/sbx@1
@@ -38,11 +47,23 @@ capabilities:
   # api.github.com is listed beside the *.github.com wildcard because the
   # credential inject check below is an exact host match: the wildcard covers
   # the host at run time but does not satisfy validation.
+  #
+  # api.trustedrouter.com serves the hosted confidential models. Its key is an
+  # sbx custom secret rather than a credential@1 entry here: `sbx secret
+  # set-custom --env TRUSTEDROUTER_API_KEY` puts a placeholder in the sandbox
+  # environment and the proxy swaps in the real key on requests to this host.
+  # The trustedrouter extension verifies the gateway's attestation against
+  # TrustedRouter's published release (trustedrouter.com) and Google's
+  # Confidential Space signing keys (the two googleapis.com hosts).
   - type: com.docker.sandbox/network-policy@1
     config:
       runtime:
         allow:
           - "host.docker.internal:8010"
+          - "api.trustedrouter.com:443"
+          - "trustedrouter.com:443"
+          - "confidentialcomputing.googleapis.com:443"
+          - "www.googleapis.com:443"
           - "github.com:443"
           - "api.github.com:443"
           - "*.github.com:443"
