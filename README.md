@@ -74,7 +74,7 @@ the result by source hash.
 To build and inspect the kit's resolved declarations without starting a sandbox:
 
 ```sh
-sbx kit inspect ~/Code/repos/pi-omlx-sandbox
+sbx kit inspect /path/to/pi-omlx-sandbox
 ```
 
 ### Updating Pi
@@ -97,10 +97,11 @@ The `pi.yaml` checks build the kit and assert on `sbx kit inspect --json`, becau
 
 ## Run
 
-Link `pi-sbx` onto your `PATH` once:
+Link `pi-sbx` onto your `PATH` once, from the root of your clone of this repo
+(any directory on your `PATH` works in place of `~/.local/bin`):
 
 ```sh
-ln -s ~/Code/repos/pi-omlx-sandbox/pi-sbx ~/.local/bin/pi-sbx
+ln -s "$PWD/pi-sbx" ~/.local/bin/pi-sbx
 ```
 
 Then, from any project directory:
@@ -109,7 +110,7 @@ Then, from any project directory:
 pi-sbx                    # Pi on the current directory
 pi-sbx -- --continue      # continue the most recent session
 pi-sbx -- --resume        # pick a session interactively
-pi-sbx ~/Code/repos/myapp # Pi on another directory
+pi-sbx ~/projects/myapp   # Pi on another directory
 ```
 
 Each project gets its own sandbox, named after the directory plus a short hash of
@@ -121,8 +122,8 @@ lists them with their workspaces.
 Options that only apply when the sandbox is created:
 
 ```sh
-pi-sbx -m qwen3-8b                          # make this oMLX model Pi's default
-pi-sbx ~/Code/repos/myapp ~/docs:ro          # mount more paths; :ro for read-only
+pi-sbx -m qwen3-8b                    # make this oMLX model Pi's default
+pi-sbx ~/projects/myapp ~/docs:ro     # mount more paths; :ro for read-only
 ```
 
 Passing either to an existing sandbox fails with the `sbx rm` command to run first.
@@ -136,7 +137,7 @@ Pi connects to oMLX on the host at `host.docker.internal:8010`.
 sandbox:
 
 ```sh
-sbx run ~/Code/repos/pi-omlx-sandbox --name pi-myapp ~/Code/repos/myapp
+sbx run /path/to/pi-omlx-sandbox --name pi-myapp ~/projects/myapp
 ```
 
 Re-attaching leaves the kit out, and agent arguments go after `--`:
@@ -147,13 +148,13 @@ sbx run --name pi-myapp -- --continue
 
 ### Path casing must match exactly
 
-macOS is case-insensitive, so `cd ~/code/repos/myapp` works even when the directory
-is really `~/Code/repos/myapp`. sbx mounts the workspace at its literal host path
+macOS is case-insensitive, so `cd ~/projects/myapp` works even when the directory
+is really `~/Projects/myapp`. sbx mounts the workspace at its literal host path
 inside a Linux VM, which is case-sensitive, so a mismatched path fails there: the
 sandbox is still created, and the agent dies immediately:
 
 ```
-OCI runtime exec failed: chdir to `/Users/<username>/code/repos/myapp`: No such file or directory
+OCI runtime exec failed: chdir to `/Users/<username>/projects/myapp`: No such file or directory
 ERROR: agent exited with code 127
 ```
 
@@ -171,7 +172,7 @@ To load extensions from your Mac's Pi config, mount it read-only when creating t
 sandbox:
 
 ```sh
-pi-sbx ~/Code/repos/myapp ~/.pi/agent:ro
+pi-sbx ~/projects/myapp ~/.pi/agent:ro
 ```
 
 sbx mounts it at its literal host path (`/Users/<username>/.pi/agent`), not at the
